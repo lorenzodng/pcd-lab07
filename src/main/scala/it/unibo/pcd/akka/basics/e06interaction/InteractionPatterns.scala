@@ -10,43 +10,58 @@ import scala.concurrent.duration.DurationInt
 import scala.util.Success
 
 object HelloBehavior:
+
   final case class Greet(whom: String, replyTo: ActorRef[Greeted])
   final case class Greeted(whom: String, from: ActorRef[Greet])
+
   def apply(): Behavior[Greet] = Behaviors.receive: (context, message) =>
     context.log.info("Hello {}!", message.whom)
     message.replyTo ! Greeted(message.whom, context.self)
     Behaviors.same
 
+//esempio di attore root e risposta a un messaggio con onComplete
 object InteractionPatternsAsk extends App:
   import HelloBehavior.*
 
+  /*
+  N.B.: f.onComplete non fa parte esattamente del comportamento dell'attore padre, proprio perchè un qualcosa che viene eseguito solo in corrispondenza di eventuali eventi (ovvero, in questeo caso, in seguito alla risposta di HelloBehavior).
+  onComplete, quindi, viene in realtà eseguito su un thread differente rispetto al thread di Akka rappresentativo del message loop che esegue Behaviors.setup.
+  Tuttavia, se si verifica il caso in cui dovrebbe sia essere eseguito onComplete che un altro possibile handler (in questo caso non presente) dedicato alla gestione di un'ulteriore risposta, non si incorre in corse critiche grazie a ExecutionContext = ctx.executionContext che "forza" l'esecuzione di onComplete sul thread del message loop
+   */
   val system = ActorSystem(
-    Behaviors.setup[Greeted] { ctx =>
+    Behaviors.setup[Greeted] { ctx =>  //viene creato un attore "padre"
       val greeter = ctx.spawnAnonymous(HelloBehavior())
-      given Timeout = 2.seconds
+      given Timeout = 2.seconds //specifico quanto tempo l'attore deve aspettare una risposta
       given Scheduler = ctx.system.scheduler
-      given ExecutionContext = ctx.executionContext
-      val f: Future[Greeted] = greeter ? (replyTo => Greet("Bob", replyTo))
-      f.onComplete {
+      given ExecutionContext = ctx.executionContext //forzo l'esecuzione di onComplete da parte del message-loop
+      val f: Future[Greeted] = greeter ? (replyTo => Greet("Bob", replyTo)) //mando un messaggio all'attore HelloBehavior (attore figlio) specificando come mittente un attore temporaneo replyTo (dura solo fino a quando riceve la risposta) e mi metto in attesa per 2 secondi. Quando mi metto in attesa con questo pattern, il message loop può continuare a reagire ad altri messaggi se arrivano prima, e quando arriva questo, l'esecuzione riprende da qui.
+      f.onComplete { //una volta che ottenuta la risposta, eseguo un handler
         case Success(Greeted(who, from)) => println(s"$who has been greeted by ${from.path}!")
         case _ => println("No greet")
       }
-      Behaviors.empty
+      Behaviors.empty // non fa nulla, quindi il comportamento vale per un solo ciclo di esecuzione
     },
     name = "hello-world"
   )
 
+//esempio di attore root e risposta a un messaggio con pipeToSelf
 object InteractionPatternsPipeToSelf extends App:
   import HelloBehavior._
 
+  /*
+  N.B: differentemente dal caso precedente, le race conditions sono evitate attraverso pipeToSelf che permette di reinviare il messaggio ottenuto come risposta all'attore stesso, 
+  così da gestirlo direttamente all'interno del comportamento dell'attore mediante Behavior.receive.
+  */
   val system = ActorSystem(
-    Behaviors.setup[Greeted] { ctx =>
+    Behaviors.setup[Greeted] {
+      ctx =>
       val greeter = ctx.spawn(HelloBehavior(), "greeter")
-      given Timeout = 2.seconds
+      given Timeout = 2.seconds //creo un timer di 2 secondi. Ogni volta che riceve un messaggio, si ferma per 2 secondi
       given Scheduler = ctx.system.scheduler
       val f: Future[Greeted] = greeter ? (replyTo => Greet("Bob", replyTo))
-      ctx.pipeToSelf(f)(_.getOrElse(Greeted("nobody", ctx.system.ignoreRef)))
-      Behaviors.receive { case (ctx, Greeted(whom, from)) =>
+      ctx.pipeToSelf(f)(_.getOrElse(Greeted("nobody", ctx.system.ignoreRef))) //trasferisco all'attore padre il messaggio di risposta
+      Behaviors.receive { //l'attore padre reagisce al messaggio di risposta
+        case (ctx, Greeted(whom, from)) =>
         ctx.log.info(s"$whom has been greeted by ${from.path.name}")
         Behaviors.stopped
       }
@@ -54,15 +69,16 @@ object InteractionPatternsPipeToSelf extends App:
     name = "hello-world"
   )
 
+//esempio di attore root e risposta a un messaggio con timer
 object InteractionPatternsSelfMessage extends App:
   val system = ActorSystem(
     Behaviors.setup[String] { ctx =>
-      Behaviors.withTimers { timers =>
-        Behaviors.receiveMessage {
+      Behaviors.withTimers {
+        timers => Behaviors.receiveMessage {
           case "" => Behaviors.stopped
-          case s =>
-            ctx.log.info("" + s.head)
-            timers.startSingleTimer(s.tail, 300.millis)
+          case s => //elaboro il messaggio un carattere per volta e in modo ricorsivo
+            ctx.log.info("" + s.head) //aggiungo ogni carattere alla testa (già parzialmente formata)
+            timers.startSingleTimer(s.tail, 300.millis) //attendo 300 ms e invio un messaggio all'attore stesso contenente la coda della stringa
             Behaviors.same
         }
       }
@@ -70,7 +86,7 @@ object InteractionPatternsSelfMessage extends App:
     name = "hello-world"
   )
 
-  system ! "hello akka"
+  system ! "hello akka" //mando un messaggio all'attore root (eseguito dal thread main)
 
 object InteractionPatternsMsgAdapter extends App:
   val system = ActorSystem(
