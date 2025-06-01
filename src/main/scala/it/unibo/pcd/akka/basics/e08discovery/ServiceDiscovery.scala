@@ -5,10 +5,10 @@ import akka.actor.typed.receptionist.Receptionist
 import akka.actor.typed.receptionist.ServiceKey
 import akka.actor.typed.scaladsl.Behaviors
 import it.unibo.pcd.akka.basics.e08discovery.IDGenerator.RequestId
-
 import java.util.UUID
-import javax.swing.plaf.basic.BasicTableHeaderUI
 import scala.language.postfixOps
+
+//esempio di attori che interagiscono tra loro attraverso un meccanismo di discovery, ovvero un meccanismo che permette agli attori di scoprire altri attori registrati in un sistema
 
 //attore
 object IDGenerator:
@@ -29,7 +29,7 @@ object UsingSubscribe:
   def apply(): Behavior[Nothing] = Behaviors.setup[Receptionist.Listing]: ctx => //definisco un attore che riceve solo messaggi di tipo Receptionist.Listing
       val myPrinter = ctx.spawnAnonymous(Printer()) //creo un attore Printer
       ctx.system.receptionist ! Receptionist.Subscribe(key = IDGenerator.key, ctx.self) //registro l'attore a Receptionist attraverso la chiave
-      Behaviors.receiveMessagePartial[Receptionist.Listing]: //utilizzo "receiveMessagePartial" perchè sono interessato ai messaggi relativi ad una specifica chiave (in alteri termini sfrutto il case)
+      Behaviors.receiveMessagePartial[Receptionist.Listing]: //utilizzo "receiveMessagePartial" perchè sono interessato ai messaggi relativi a una specifica chiave (in alteri termini sfrutto il case)
         case IDGenerator.key.Listing(lst) => //se è ricevuto un messaggio che notifica i cambiamenti degli attori registrati con quella chiave al receptionist su Receptionist
           ctx.log.info("new generator (subscribe)" + lst.size)
           lst.foreach(_ ! RequestId(myPrinter)) //per ogni attore nella lista, invio un messaggio RequestId passando come riferimento il proprio attore myPrinter.
